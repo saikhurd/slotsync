@@ -1,0 +1,12 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+
+slotsync:
+  jwt:
+    secret: test-secret-key-for-integration-tests-min-32-bytes-long
+    access-ttl-ms: 900000
+    refresh-ttl-days: 7
