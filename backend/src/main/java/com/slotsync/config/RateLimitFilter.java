@@ -32,15 +32,23 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
     private final Map<String, BucketEntry> buckets = new ConcurrentHashMap<>();
     private final boolean trustProxyHeaders;
+    private final boolean rateLimitingEnabled;
 
-    public RateLimitFilter(@Value("${slotsync.security.trust-proxy-headers:false}") boolean trustProxyHeaders) {
+    public RateLimitFilter(@Value("${slotsync.security.trust-proxy-headers:false}") boolean trustProxyHeaders,
+                            @Value("${slotsync.security.rate-limiting-enabled:true}") boolean rateLimitingEnabled) {
         this.trustProxyHeaders = trustProxyHeaders;
+        this.rateLimitingEnabled = rateLimitingEnabled;
     }
 
     @Override
     protected void doFilterInternal(@NonNull HttpServletRequest request,
                                      @NonNull HttpServletResponse response,
                                      @NonNull FilterChain filterChain) throws ServletException, IOException {
+
+        if (!rateLimitingEnabled) {
+            filterChain.doFilter(request, response);
+            return;
+        }
 
         RouteLimit routeLimit = classify(request);
         if (routeLimit == null) {

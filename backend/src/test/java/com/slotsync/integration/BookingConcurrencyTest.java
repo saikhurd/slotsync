@@ -6,6 +6,9 @@ import com.slotsync.entity.Resource;
 import com.slotsync.repository.BookingRepository;
 import com.slotsync.repository.ResourceRepository;
 import com.slotsync.service.BookingService;
+import com.slotsync.entity.User;
+import com.slotsync.entity.Role;
+import com.slotsync.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,14 +28,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * The centerpiece test. A naive "check-then-insert" booking implementation
- * passes this test roughly 0% of the time under real concurrency — 20
- * threads racing the same read-then-write window will produce multiple
- * CONFIRMED rows. This test runs against a REAL Postgres container (not H2)
- * because part of the guarantee is enforced by a Postgres-specific partial
- * unique index; H2 would give false confidence that the code is correct.
- */
 @Testcontainers
 @SpringBootTest
 class BookingConcurrencyTest {
@@ -56,17 +51,29 @@ class BookingConcurrencyTest {
     private BookingRepository bookingRepository;
     @Autowired
     private ResourceRepository resourceRepository;
+    @Autowired
+    private UserRepository userRepository;
 
     private Long resourceId;
     private LocalDateTime contestedSlot;
+    private List<Long> userIds;
 
     @BeforeEach
     void setUp() {
         bookingRepository.deleteAll();
         resourceRepository.deleteAll();
+        userRepository.deleteAll();
+
         Resource resource = resourceRepository.save(new Resource("Conference Room A", "Concurrency test fixture"));
         resourceId = resource.getId();
         contestedSlot = LocalDateTime.now().plusDays(1).withHour(10).withMinute(0).withSecond(0).withNano(0);
+
+        userIds = new java.util.ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            User user = userRepository.save(
+                    new User("concurrency-test-user-" + i + "@example.com", "irrelevant-hash", Role.USER));
+            userIds.add(user.getId());
+        }
     }
 
     @Test
@@ -82,10 +89,10 @@ class BookingConcurrencyTest {
                 resourceId, contestedSlot, contestedSlot.plusHours(1));
 
         for (int i = 0; i < threadCount; i++) {
-            long userId = i + 1L;
+            Long userId = userIds.get(i);
             pool.submit(() -> {
                 try {
-                    startLine.await(); // all threads release at once
+                    startLine.await();
                     bookingService.createBooking(userId, request);
                     successCount.incrementAndGet();
                 } catch (Exception e) {
