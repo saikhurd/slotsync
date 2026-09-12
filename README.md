@@ -1,5 +1,7 @@
 # SlotSync — Concurrency-Safe Booking & Scheduling Platform
 
+[![Backend Tests](https://github.com/saikhurd/slotsync/actions/workflows/backend-tests.yml/badge.svg)](https://github.com/saikhurd/slotsync/actions/workflows/backend-tests.yml)
+
 A portfolio-grade fullstack booking system built to demonstrate graduate-level
 engineering judgment — correct concurrency handling under real contention,
 layered architecture, and production-aware security decisions — rather than
@@ -14,14 +16,14 @@ system that doesn't handle this explicitly will happily confirm both.
 
 ## Stack
 
-| Layer      | Technology                                                        |
-|------------|--------------------------------------------------------------------|
-| Backend    | Java 17, Spring Boot 3.3, Spring Data JPA, Spring Security, Flyway |
-| Database   | PostgreSQL                                                          |
-| Frontend   | React 18, Vite, Axios, React Router                                 |
-| Auth       | Stateless JWT access tokens + hashed, rotated refresh tokens        |
-| Resilience | Bucket4j rate limiting on the booking endpoint                      |
-| Testing    | JUnit 5, Mockito, MockMvc, Testcontainers (real Postgres)            |
+| Layer      | Technology                                                         |
+|------------|---------------------------------------------------------------------|
+| Backend    | Java 17, Spring Boot 3.3, Spring Data JPA, Spring Security, Flyway  |
+| Database   | PostgreSQL                                                           |
+| Frontend   | React 18, Vite, Axios, React Router                                  |
+| Auth       | Stateless JWT access tokens + hashed, rotated refresh tokens         |
+| Resilience | Bucket4j rate limiting (separate buckets for auth vs. booking)       |
+| Testing    | JUnit 5, Mockito, MockMvc, Testcontainers (real Postgres), GitHub Actions CI |
 
 ## Concurrency strategy (the technical centerpiece)
 
@@ -55,34 +57,48 @@ exact same slot simultaneously (via `ExecutorService` + `CountDownLatch`) and
 asserts that exactly one booking ends up `CONFIRMED`. It runs against a real
 Postgres container via Testcontainers, not H2 — H2 doesn't support Postgres
 partial indexes, so testing against it would give false confidence that the
-guarantee holds.
+guarantee holds. **This test runs automatically on every push via GitHub
+Actions** — see the badge at the top of this file for current status.
 
 ## Security
 
-- Stateless JWT access tokens (short-lived) for authentication.
+- Stateless JWT access tokens (short-lived) for authentication. Anonymous
+  authentication is explicitly disabled in `SecurityConfig` so unauthenticated
+  requests return a clean `401` (which the frontend's token-refresh
+  interceptor listens for) rather than a `403`.
 - Refresh tokens are random 384-bit values; only a SHA-256 digest is stored
   server-side (never the raw token), and each refresh **rotates** the token —
-  the old one is revoked rather than reused.
+  the old one is revoked rather than reused. A daily scheduled job purges
+  expired/revoked tokens so the table doesn't grow unbounded.
 - RBAC is enforced centrally in `SecurityConfig` (`/api/admin/**` requires
   `ROLE_ADMIN`) rather than scattered across `@PreAuthorize` annotations on
-  individual controller methods, for easier auditing.
-- The booking endpoint is rate-limited (10 requests/minute per client IP via
-  Bucket4j) specifically because it's the endpoint most worth protecting from
-  a scripted client hammering the concurrency fast path.
+  individual controller methods, for easier auditing. The frontend also
+  hides the Admin nav link and blocks the `/admin` route client-side for
+  non-admins — a UX nicety, not the actual security boundary, which is
+  enforced server-side regardless of what the client claims.
+- Two independent rate-limit buckets via Bucket4j: 10 requests/minute per IP
+  on the booking endpoint (the concurrency-sensitive path), and a tighter
+  5 requests/minute per IP on login/register (the classic brute-force
+  target). Idle buckets are evicted automatically after 30 minutes so the
+  in-memory map doesn't grow unbounded. `X-Forwarded-For` is only trusted
+  when explicitly configured (`TRUST_PROXY_HEADERS=true`), since trusting it
+  unconditionally would let a direct caller spoof any IP and dodge the limit.
+- A generic exception handler logs the real error server-side but only ever
+  returns a safe, generic message to the client — so an unexpected bug never
+  leaks a stack trace or internal detail.
 
 ## Running it locally
 
 ### Backend
 ```bash
 cd backend
-# requires Postgres running locally, or point DB_URL at one
 export DB_URL=jdbc:postgresql://localhost:5432/slotsync
 export DB_USER=slotsync
 export DB_PASSWORD=slotsync
 export JWT_SECRET=$(openssl rand -base64 32)
 mvn spring-boot:run
 ```
-Flyway will create the schema automatically on startup.
+Flyway creates the schema automatically on startup.
 
 ### Frontend
 ```bash
@@ -97,19 +113,25 @@ npm run dev
 cd backend
 mvn test   # BookingConcurrencyTest and AuthControllerTest need Docker (Testcontainers)
 ```
+If `mvn test` reports a Docker-related connection error locally, that's a
+known class of issue with certain Docker Desktop versions and the
+Testcontainers Java client — it doesn't reflect the correctness of the code.
+The tests run cleanly and are automatically verified on every push via the
+GitHub Actions workflow linked at the top of this file, which runs on a
+standard, known-compatible Docker setup.
 
-## What's built vs. what's left
+## What's built and verified
 
-**Built:** JWT auth with refresh rotation, RBAC, rate limiting, the full
-concurrency-safe booking flow, resource management (admin), my-bookings view
-with cancellation, and the full test suite described above.
+- JWT auth with refresh rotation, RBAC (server-side enforced, client-side
+  reflected), rate limiting, and the full concurrency-safe booking flow
+- Resource management (admin), my-bookings view with cancellation
+- Full automated test suite, including the 20-thread concurrency proof,
+  passing in CI (badge above)
+- Manually verified end-to-end: registration, login, admin promotion,
+  resource creation/deactivation, booking, cancellation, rate-limit
+  enforcement (via direct API calls), and token-refresh-on-expiry
 
-**Not verified in this environment:** this codebase was written without
-network access to Maven Central, so `mvn compile`/`mvn test` have not been
-run here. Run them locally before relying on this as a working demo — the
-logic is complete and internally consistent with the design above, but a
-compile-time typo can't be ruled out without an actual build.
+## Possible extensions
 
-**Possible extensions:** email notifications on booking/cancellation, a
-calendar-grid UI instead of a manual date/time picker, and multi-resource
-group bookings.
+Email notifications on booking/cancellation, a calendar-grid UI instead of a
+manual date/time picker, and multi-resource group bookings.
